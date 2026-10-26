@@ -8,5 +8,5 @@ build-backend = "setuptools.build_meta"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 filterwarnings = [
-    "ignore:.*Skipping the post-processing step.*:UserWarning",
+    "ignore:(?s).*Skipping the post-processing step.*:UserWarning",
 ]
