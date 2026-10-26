@@ -34,3 +34,19 @@ python ./tools/vos_inference.py \
 Then, we can use the evaluation tools or servers for each dataset to get the performance of the prediction PNG files above.
 
 Note: by default, the `vos_inference.py` script above assumes that all objects to track already appear on frame 0 in each video (as is the case in DAVIS, MOSE or SA-V). **For VOS datasets that don't have all objects to track appearing in the first frame (such as LVOS or YouTube-VOS), please add the `--track_object_appearing_later_in_video` flag when using `vos_inference.py`**.
+
+## Stream predictor (GPU)
+
+`SAM2StreamPredictor` (`sam2/sam2_stream_predictor.py`) has two GPU tools. Both print `CUDA not available, skipping` and exit 0 without a GPU.
+
+Parity with upstream `SAM2VideoPredictor` on a real video (exits 1 below IoU 0.99 in fp32 or 0.98 in bf16):
+
+```bash
+python tools/stream_parity.py --config configs/sam2.1/sam2.1_hiera_s.yaml --ckpt checkpoints/sam2.1_hiera_small.pt --size 512 --dtype bf16
+```
+
+Per-frame latency, FPS, a `torch.profiler` summary and host-device syncs, with upstream `propagate_in_video` as the reference:
+
+```bash
+python tools/benchmark_stream.py --config configs/sam2.1/sam2.1_hiera_s.yaml --ckpt checkpoints/sam2.1_hiera_small.pt --size 512 --objects 3
+```
