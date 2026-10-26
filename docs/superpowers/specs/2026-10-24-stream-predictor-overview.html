@@ -1,0 +1,342 @@
+<title>SAM2 Stream Predictor</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;500;700;800&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: single reading column (RTL), wide blocks (tables, diagrams, code) scroll inside their own frame */
+:root{
+  --bg:#f3f6f5; --surface:#ffffff; --fg:#14201e; --muted:#53625f; --line:#d5dfdc;
+  --accent:#0d7566; --accent-soft:#dcefeb; --warn:#9a5a06; --warn-soft:#f8ecd9;
+  --bad:#a8291f; --bad-soft:#f7e1de; --good:#1f6b33; --good-soft:#dff0e2;
+  --code-bg:#e9efed;
+  --font-body:"Vazirmatn", "Tahoma", system-ui, sans-serif;
+  --font-mono:"JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  --s-1:.8125rem; --s0:1rem; --s1:1.2rem; --s2:1.5rem; --s3:2.1rem;
+}
+@media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){
+  --bg:#0e1514; --surface:#151f1d; --fg:#e2ebe9; --muted:#9aaba7; --line:#2a3836;
+  --accent:#43c4ae; --accent-soft:#16332e; --warn:#e3a54a; --warn-soft:#3a2c16;
+  --bad:#f08a80; --bad-soft:#3d1d1a; --good:#7fd08f; --good-soft:#16301c;
+  --code-bg:#1b2826; color-scheme:dark;
+}}
+:root[data-theme="dark"]{
+  --bg:#0e1514; --surface:#151f1d; --fg:#e2ebe9; --muted:#9aaba7; --line:#2a3836;
+  --accent:#43c4ae; --accent-soft:#16332e; --warn:#e3a54a; --warn-soft:#3a2c16;
+  --bad:#f08a80; --bad-soft:#3d1d1a; --good:#7fd08f; --good-soft:#16301c;
+  --code-bg:#1b2826; color-scheme:dark;
+}
+body{background:var(--bg);color:var(--fg);font-family:var(--font-body);font-size:var(--s0);line-height:1.85}
+.page{max-width:52rem;margin:0 auto;padding-block:2.5rem 4rem;
+  padding-left:max(16px, env(safe-area-inset-left, 0px));padding-right:max(16px, env(safe-area-inset-right, 0px));
+  display:flex;flex-direction:column;gap:2.75rem}
+h1,h2,h3{text-wrap:balance;line-height:1.35;margin:0}
+h1{font-size:var(--s3);font-weight:800}
+h2{font-size:var(--s2);font-weight:700;padding-bottom:.4rem;border-bottom:1px solid var(--line)}
+h3{font-size:var(--s1);font-weight:700}
+p{margin:0;max-width:65ch}
+section{display:flex;flex-direction:column;gap:1rem}
+.eyebrow{font-family:var(--font-mono);font-size:var(--s-1);letter-spacing:.06em;color:var(--accent);direction:ltr;text-align:right}
+.lede{font-size:var(--s1);color:var(--muted)}
+code,.mono{font-family:var(--font-mono);font-size:.88em;direction:ltr;unicode-bidi:isolate}
+p code,li code,td code{background:var(--code-bg);padding:.05em .35em;border-radius:4px}
+pre{margin:0;background:var(--code-bg);border:1px solid var(--line);border-radius:8px;padding:1rem 1.1rem;overflow-x:auto;direction:ltr;text-align:left;line-height:1.6}
+pre code{background:none;padding:0;font-size:.85rem}
+ul,ol{margin:0;padding-inline-start:1.3rem;display:flex;flex-direction:column;gap:.45rem}
+li{max-width:65ch}
+.status{display:grid;grid-template-columns:repeat(auto-fit,minmax(14rem,1fr));gap:.75rem}
+.status div{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:.85rem 1rem;display:flex;flex-direction:column;gap:.25rem;min-width:0}
+.status b{font-size:var(--s-1);color:var(--muted);font-weight:500}
+.pill{display:inline-block;font-size:var(--s-1);font-weight:700;padding:.05rem .55rem;border-radius:999px;white-space:nowrap}
+.pill.done{background:var(--good-soft);color:var(--good)}
+.pill.next{background:var(--warn-soft);color:var(--warn)}
+.pill.later{background:var(--accent-soft);color:var(--accent)}
+.pill.block{background:var(--bad-soft);color:var(--bad)}
+.scroll{overflow-x:auto;border:1px solid var(--line);border-radius:8px;background:var(--surface)}
+table{border-collapse:collapse;width:100%;font-size:.94rem;min-width:34rem}
+th,td{padding:.6rem .8rem;text-align:right;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-weight:700;color:var(--muted);font-size:var(--s-1);background:var(--code-bg)}
+tr:last-child td{border-bottom:none}
+td.num{font-family:var(--font-mono);font-variant-numeric:tabular-nums;direction:ltr;text-align:left;white-space:nowrap}
+.note{border-inline-start:3px solid var(--warn);background:var(--warn-soft);padding:.8rem 1rem;border-radius:0 6px 6px 0}
+.note.bad{border-color:var(--bad);background:var(--bad-soft)}
+.note p{max-width:none}
+figure{margin:0;display:flex;flex-direction:column;gap:.5rem}
+figcaption{font-size:var(--s-1);color:var(--muted)}
+svg text{font-family:var(--font-body)}
+.chart .bar{fill:var(--accent)}
+.chart .grid{stroke:var(--line);stroke-width:1}
+.chart .lbl{fill:var(--muted);font-size:12px}
+.chart .val{fill:var(--fg);font-size:12px;font-weight:700;font-family:var(--font-mono)}
+.chart .sm{fill:var(--bad);font-size:11.5px;font-family:var(--font-mono)}
+.diagram .box{fill:var(--surface);stroke:var(--line);stroke-width:1.2}
+.diagram .hot{fill:var(--bad-soft);stroke:var(--bad)}
+.diagram .ok{fill:var(--accent-soft);stroke:var(--accent)}
+.diagram .t{fill:var(--fg);font-size:13px;font-family:var(--font-mono)}
+.diagram .ts{fill:var(--muted);font-size:11.5px;font-family:var(--font-mono)}
+.diagram .h{fill:var(--fg);font-size:14px;font-weight:700}
+.diagram .arrow{stroke:var(--muted);stroke-width:1.3;fill:none;marker-end:url(#ah)}
+.diagram .ahead{fill:var(--muted)}
+.steps{counter-reset:s;list-style:none;padding:0}
+.steps li{counter-increment:s;display:grid;grid-template-columns:2rem 1fr;gap:.6rem}
+.steps li::before{content:counter(s);font-family:var(--font-mono);font-weight:600;color:var(--accent);background:var(--accent-soft);border-radius:6px;text-align:center;height:1.9rem;line-height:1.9rem}
+.bp{display:grid;grid-template-columns:repeat(auto-fit,minmax(18rem,1fr));gap:1rem}
+.bp div{display:flex;flex-direction:column;gap:.5rem;min-width:0}
+.bp ul{font-size:.95rem}
+a{color:var(--accent)}
+a:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+footer{font-size:var(--s-1);color:var(--muted);border-top:1px solid var(--line);padding-top:1rem}
+</style>
+
+<div class="page" dir="rtl" lang="fa">
+
+<header style="display:flex;flex-direction:column;gap:.75rem">
+  <div class="eyebrow">rghavipour/sam2 · feat/stream-predictor · 2026-10-24</div>
+  <h1>SAM2 Stream Predictor</h1>
+  <p class="lede">یک predictor جدید برای ردیابی زنده روی SAM 2 اصلی. هدفش حل دو محدودیت <code>dahi-live-ai</code> است: فقط یک object در هر سشن، و افت FPS با زیاد شدن سشن‌ها.</p>
+  <div class="status">
+    <div><b>وضعیت branch</b><span><span class="pill done">design و plan آماده</span></span></div>
+    <div><b>کد و تست</b><span><span class="pill next">شروع نشده</span></span></div>
+    <div><b>تست روی GPU</b><span><span class="pill block">منتظر تأیید host key سرور</span></span></div>
+  </div>
+</header>
+
+<section>
+  <h2>خلاصه</h2>
+  <p>سرویس الان روی <code>SAM2CameraPredictor</code> از fork <span class="mono">Gy920/segment-anything-2-real-time</span> کار می‌کند. این fork منطق قدیمی SAM 2 (قبل از 12/2024) را دارد. objectها فقط قبل از اولین <code>track()</code> اضافه می‌شوند، و state هر سشن روی خود شیء predictor نگه داشته می‌شود.</p>
+  <p>این branch یک <code>SAM2StreamPredictor</code> تازه روی upstream (<span class="mono">facebookresearch/sam2</span>) می‌سازد:</p>
+  <ul>
+    <li>هر object مستقل است و در هر frame اضافه، اصلاح یا حذف می‌شود.</li>
+    <li>state سشن بیرون از مدل است، پس یک نسخه از وزن‌ها برای همهٔ سشن‌ها کافی است.</li>
+    <li>حافظه سقف ثابت دارد و هیچ تصویری نگه داشته نمی‌شود.</li>
+    <li>objectهای یک سشن با هم batch می‌شوند و image encoder فقط یک بار برای هر frame اجرا می‌شود.</li>
+  </ul>
+  <p>خود مدل و وزن‌ها دست نمی‌خورند و خروجی باید با <code>SAM2VideoPredictor</code> upstream یکی باشد. تست parity همین را ثابت می‌کند.</p>
+</section>
+
+<section>
+  <h2>دو محدودیت فعلی و شواهدشان</h2>
+
+  <h3>۱. با سشن بیشتر FPS می‌افتد و GPU قوی‌تر کمکی نمی‌کند</h3>
+  <p>اعداد این بخش از SLA report تاریخ 2026-09-24 خود <code>dahi-live-ai</code> است: RTX 3080 Ti، SAM 2.1 small، ورودی 512، stream با 640x480 در 15 FPS.</p>
+  <figure>
+    <div class="scroll" style="padding:.5rem">
+    <svg class="chart" viewBox="0 0 660 270" width="100%" role="img" aria-label="زمان forward برای ۱ تا ۶ سشن در برابر مصرف GPU" style="min-width:34rem;direction:ltr">
+      <line class="grid" x1="50" y1="210" x2="640" y2="210"/>
+      <line class="grid" x1="50" y1="150" x2="640" y2="150"/>
+      <line class="grid" x1="50" y1="90" x2="640" y2="90"/>
+      <line class="grid" x1="50" y1="30" x2="640" y2="30"/>
+      <text class="lbl" x="44" y="214" text-anchor="end">0</text>
+      <text class="lbl" x="44" y="154" text-anchor="end">100</text>
+      <text class="lbl" x="44" y="94" text-anchor="end">200</text>
+      <text class="lbl" x="44" y="34" text-anchor="end">300 ms</text>
+      <rect class="bar" x="75"  y="146.4" width="56" height="63.6"/>
+      <rect class="bar" x="173" y="134.4" width="56" height="75.6"/>
+      <rect class="bar" x="271" y="117"   width="56" height="93"/>
+      <rect class="bar" x="369" y="105.6" width="56" height="104.4"/>
+      <rect class="bar" x="467" y="73.2"  width="56" height="136.8"/>
+      <rect class="bar" x="565" y="31.2"  width="56" height="178.8"/>
+      <text class="val" x="103" y="140" text-anchor="middle">106</text>
+      <text class="val" x="201" y="128" text-anchor="middle">126</text>
+      <text class="val" x="299" y="111" text-anchor="middle">155</text>
+      <text class="val" x="397" y="100" text-anchor="middle">174</text>
+      <text class="val" x="495" y="67"  text-anchor="middle">228</text>
+      <text class="val" x="593" y="25"  text-anchor="middle">298</text>
+      <text class="lbl" x="103" y="230" text-anchor="middle">1 room</text>
+      <text class="lbl" x="201" y="230" text-anchor="middle">2</text>
+      <text class="lbl" x="299" y="230" text-anchor="middle">3</text>
+      <text class="lbl" x="397" y="230" text-anchor="middle">4</text>
+      <text class="lbl" x="495" y="230" text-anchor="middle">5</text>
+      <text class="lbl" x="593" y="230" text-anchor="middle">6</text>
+      <text class="sm" x="103" y="252" text-anchor="middle">SM 9.7%</text>
+      <text class="sm" x="201" y="252" text-anchor="middle">SM 9.6%</text>
+      <text class="sm" x="299" y="252" text-anchor="middle">SM 10.4%</text>
+      <text class="sm" x="397" y="252" text-anchor="middle">SM 10.7%</text>
+      <text class="sm" x="495" y="252" text-anchor="middle">SM 11.5%</text>
+      <text class="sm" x="593" y="252" text-anchor="middle">SM 8.3%</text>
+    </svg>
+    </div>
+    <figcaption>ستون‌ها: زمان <code>SAM2 forward</code> برای هر frame. خط پایین: میانگین مصرف GPU (SM). زمان تقریباً خطی بالا می‌رود ولی GPU همیشه حدود ۹۰٪ بیکار است.</figcaption>
+  </figure>
+  <ul>
+    <li>SAM 2.1 small در 512 روی این کارت باید حدود ۱۰ تا ۲۰ میلی‌ثانیه کار GPU داشته باشد. ولی یک frame با یک room حدود 106ms طول می‌کشد.</li>
+    <li>همهٔ roomها در یک process پایتون و یک GIL اجرا می‌شوند. PyTorch در حالت eager صدها kernel کوچک launch می‌کند و هزینهٔ launch روی CPU است.</li>
+    <li>ستون «on device» در report با wall time برابر است (106.1 در برابر 106.2). CUDA event دور کل <code>track()</code> گذاشته شده و زمان‌هایی را هم می‌شمارد که GPU منتظر CPU است. پس نتیجه‌گیری «سقف compute-bound سخت‌افزار» در لاگ refactor از همین خوانش غلط آمده.</li>
+    <li><code>vos_optimized</code> در fork هیچ ماژولی را compile نمی‌کند. پس در عمل نه compile داریم، نه CUDA graph.</li>
+  </ul>
+  <div class="note"><p>این تحلیل از اعداد خود report استنتاج شده و هنوز با <code>torch.profiler</code> روی GPU تأیید نشده. اولین کار روی سرور همین اندازه‌گیری است.</p></div>
+
+  <h3>۲. فقط یک object در هر سشن</h3>
+  <ul>
+    <li><strong>لایهٔ app:</strong> <code>GPUTracker</code> و <code>SimpleTracker</code> فقط یک <code>active_state</code> دارند. <code>batch_add_objects</code> فقط آخرین object را نگه می‌دارد و <code>datachannel_handler</code> هر <code>add_object</code> جدید را جایگزین قبلی می‌کند.</li>
+    <li><strong>لایهٔ fork (علت اصلی):</strong> بعد از اولین <code>track()</code>، فلگ <code>tracking_has_started=True</code> می‌شود و object جدید خطا می‌دهد. تنها راه <code>reset</code> و <code>load_first_frame</code> است که memory همهٔ objectها را پاک می‌کند. re-anchor با ReID هم همین مسیر را می‌رود.</li>
+    <li><strong>باگ‌های fork:</strong> <code>add_all_frames_to_correct_as_cond</code> تعریف نشده، <code>bbox</code> از نوع tensor بی‌صدا نادیده گرفته می‌شود، و <code>add_new_prompt_during_track</code> در هر سه مسیرش خطا می‌دهد.</li>
+  </ul>
+</section>
+
+<section>
+  <h2>معماری: قبل و بعد</h2>
+  <figure>
+    <div class="scroll" style="padding:.5rem">
+    <svg class="diagram" viewBox="0 0 760 330" width="100%" role="img" aria-label="مقایسهٔ معماری فعلی و جدید" style="min-width:40rem;direction:ltr">
+      <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="ahead" d="M0,0 L10,5 L0,10 z"/></marker></defs>
+      <text class="h" x="20" y="24">Today (Gy920 camera predictor)</text>
+      <rect class="box" x="20" y="40" width="150" height="40" rx="6"/><text class="t" x="95" y="65" text-anchor="middle">room A</text>
+      <rect class="box" x="20" y="95" width="150" height="40" rx="6"/><text class="t" x="95" y="120" text-anchor="middle">room B</text>
+      <rect class="box" x="20" y="150" width="150" height="40" rx="6"/><text class="t" x="95" y="175" text-anchor="middle">room C</text>
+      <rect class="hot" x="200" y="40" width="160" height="40" rx="6"/><text class="t" x="280" y="58" text-anchor="middle">copy.copy(model)</text><text class="ts" x="280" y="73" text-anchor="middle">state on self · 1 obj</text>
+      <rect class="hot" x="200" y="95" width="160" height="40" rx="6"/><text class="t" x="280" y="113" text-anchor="middle">copy.copy(model)</text><text class="ts" x="280" y="128" text-anchor="middle">state on self · 1 obj</text>
+      <rect class="hot" x="200" y="150" width="160" height="40" rx="6"/><text class="t" x="280" y="168" text-anchor="middle">copy.copy(model)</text><text class="ts" x="280" y="183" text-anchor="middle">state on self · 1 obj</text>
+      <path class="arrow" d="M170,60 L198,60"/><path class="arrow" d="M170,115 L198,115"/><path class="arrow" d="M170,170 L198,170"/>
+      <rect class="hot" x="80" y="225" width="260" height="46" rx="6"/><text class="t" x="210" y="245" text-anchor="middle">1 Python process · 1 GIL</text><text class="ts" x="210" y="261" text-anchor="middle">eager launches, one track() at a time</text>
+      <path class="arrow" d="M280,190 L240,222"/>
+      <line x1="390" y1="20" x2="390" y2="310" stroke="var(--line)" stroke-dasharray="4 4"/>
+      <text class="h" x="410" y="24">This branch (SAM2StreamPredictor)</text>
+      <rect class="box" x="410" y="40" width="150" height="34" rx="6"/><text class="t" x="485" y="62" text-anchor="middle">StreamSession A</text>
+      <rect class="box" x="410" y="84" width="150" height="34" rx="6"/><text class="t" x="485" y="106" text-anchor="middle">StreamSession B</text>
+      <rect class="box" x="410" y="128" width="150" height="34" rx="6"/><text class="t" x="485" y="150" text-anchor="middle">StreamSession C</text>
+      <text class="ts" x="485" y="182" text-anchor="middle">N objects each, bounded memory</text>
+      <rect class="ok" x="590" y="70" width="155" height="70" rx="6"/><text class="t" x="667" y="96" text-anchor="middle">one model</text><text class="ts" x="667" y="113" text-anchor="middle">weights only</text><text class="ts" x="667" y="128" text-anchor="middle">no per-room copy</text>
+      <path class="arrow" d="M560,57 L588,90"/><path class="arrow" d="M560,101 L588,104"/><path class="arrow" d="M560,145 L588,120"/>
+      <rect class="ok" x="430" y="205" width="315" height="70" rx="6"/>
+      <text class="t" x="587" y="227" text-anchor="middle">rows = (object, image features)</text>
+      <text class="ts" x="587" y="245" text-anchor="middle">grouped by memory layout → one batched call</text>
+      <text class="ts" x="587" y="262" text-anchor="middle">later: rows from many sessions in one call</text>
+      <path class="arrow" d="M667,140 L640,203"/>
+    </svg>
+    </div>
+    <figcaption>سمت چپ: وضعیت فعلی. سمت راست: این branch. «row» یعنی یک object همراه ردیف فیچر تصویر خودش. چون واحد کار row است، batch بین سشن‌ها در فاز بعد بدون بازطراحی اضافه می‌شود.</figcaption>
+  </figure>
+</section>
+
+<section>
+  <h2>API و چرخهٔ هر frame</h2>
+<pre><code>predictor = build_sam2_stream_predictor(config, ckpt, device="cuda")
+session = predictor.create_session(max_objects=3)
+
+predictor.set_frame(session, frame)          # uint8 RGB, HxWx3
+predictor.add_prompt(session, obj_id=1, box=[x1, y1, x2, y2])
+out = predictor.track(session)               # StreamOutput
+# out.obj_ids, out.mask_logits [N,1,H,W], out.object_score_logits [N,1]
+
+out = predictor.step(session, next_frame)    # set_frame + track
+predictor.reset_object(session, 1)           # re-anchor: memory cleared, id kept
+predictor.remove_object(session, 2)</code></pre>
+  <ol class="steps">
+    <li><span><strong><code>set_frame</code></strong> frame قبلی را نهایی می‌کند: promptهای در انتظار encode می‌شوند و در memory ثبت می‌شوند. بعد memory قدیمی‌تر از پنجره حذف می‌شود، frame جدید روی GPU resize و normalize می‌شود و فیچر backbone یک بار حساب می‌شود.</span></li>
+    <li><span><strong><code>add_prompt</code></strong> روی frame فعلی کار می‌کند. id جدید یعنی object جدید و این frame cond frame آن می‌شود. اگر object روی همین frame قبلاً track شده باشد، prompt یک اصلاح (correction) حساب می‌شود. نتیجه موقتاً نگه داشته می‌شود تا کلیک‌های بعدی هم ممکن باشد.</span></li>
+    <li><span><strong><code>track</code></strong> برای همهٔ objectها mask برمی‌گرداند. objectهایی که prompt دارند همان خروجی را می‌گیرند. بقیه بر اساس شکل memory گروه‌بندی می‌شوند و هر گروه یک بار از memory attention، SAM heads و memory encoder رد می‌شود.</span></li>
+  </ol>
+</section>
+
+<section>
+  <h2>این branch هر مشکل را چطور حل می‌کند</h2>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>مشکل</th><th>راه‌حل</th><th>کجا</th><th>وضعیت</th></tr></thead>
+    <tbody>
+      <tr><td>object جدید وسط stream ممکن نیست</td><td>state جدا برای هر object، با cond frame خودش. اضافه کردن یکی روی بقیه اثری ندارد.</td><td>این branch</td><td><span class="pill next">در plan</span></td></tr>
+      <tr><td>re-anchor کل memory را پاک می‌کند</td><td><code>reset_object</code> فقط همان object را پاک می‌کند.</td><td>این branch</td><td><span class="pill next">در plan</span></td></tr>
+      <tr><td>هزینهٔ هر object اضافه</td><td>encoder یک بار برای هر frame. objectها در یک call batch می‌شوند.</td><td>این branch</td><td><span class="pill next">در plan</span></td></tr>
+      <tr><td>copy مدل برای هر room و leak حافظه</td><td>مدل فقط وزن است و state در <code>StreamSession</code> می‌ماند. با پایان room، session آزاد می‌شود.</td><td>این branch</td><td><span class="pill next">در plan</span></td></tr>
+      <tr><td>حافظه با طول stream رشد می‌کند</td><td>پنجرهٔ ۱۵ frame برای non-cond، حداکثر ۴ cond frame، و هیچ تصویری نگه داشته نمی‌شود.</td><td>این branch</td><td><span class="pill next">در plan</span></td></tr>
+      <tr><td>preprocessing روی CPU با float64</td><td>resize و normalize روی GPU.</td><td>این branch</td><td><span class="pill next">در plan</span></td></tr>
+      <tr><td>هزینهٔ launch kernel روی CPU</td><td>shape ثابت برای memory، و <code>torch.compile</code> یا CUDA graphs.</td><td>فاز بعد</td><td><span class="pill later">طراحی آماده</span></td></tr>
+      <tr><td>یک GIL برای همهٔ roomها</td><td>چند process همراه NVIDIA MPS، یا یک engine که rowهای همهٔ سشن‌ها را با هم batch کند.</td><td>فاز بعد و <code>dahi-live-ai</code></td><td><span class="pill later">طراحی آماده</span></td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p>مشکل چند object کاملاً در همین branch حل می‌شود. برای scale سشن‌ها، این branch پایه را می‌سازد: state جدا، مدل مشترک و rowهای قابل batch. برد اصلی FPS در فاز compile/graph و batch بین سشن‌ها می‌آید. تا وقتی benchmark روی سرور انجام نشده، برای بهبود FPS عددی قول نمی‌دهیم.</p>
+</section>
+
+<section>
+  <h2>نقشهٔ راه</h2>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>فاز</th><th>کار</th><th>معیار تمام شدن</th></tr></thead>
+    <tbody>
+      <tr><td class="num">0</td><td>profile یک <code>track()</code> روی GPU</td><td>سهم kernel از CPU/launch معلوم شود</td></tr>
+      <tr><td class="num">1</td><td>stream predictor با objectهای مستقل (همین branch، task 1 تا 7)</td><td>همهٔ تست‌های CPU و parity سبز</td></tr>
+      <tr><td class="num">2</td><td>batch objectهای یک سشن (داخل task 5)</td><td>IoU ≥ 0.99 در برابر upstream</td></tr>
+      <tr><td class="num">3</td><td>shape ثابت و <code>torch.compile</code> / CUDA graphs</td><td>کاهش ms/frame، اندازه‌گیری‌شده</td></tr>
+      <tr><td class="num">4</td><td>engine مشترک بین سشن‌ها (batch encoder و memory)</td><td>FPS هر سشن تا N سشن ثابت بماند</td></tr>
+      <tr><td class="num">—</td><td>در <code>dahi-live-ai</code>: چند process همراه MPS، pin کردن commit، جایگزینی predictor</td><td>تغییر جدا در ریپوی خودش</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section>
+  <h2>تست و معیار درستی</h2>
+  <ul>
+    <li><strong>روی CPU همین ماشین:</strong> مدل tiny با وزن تصادفی در 256 پیکسل، با پیکربندی‌های موجود و hydra override. وزن‌ها با <code>load_state_dict</code> بین predictor جدید و <code>SAM2VideoPredictor</code> upstream یکی می‌شوند، پس مقایسه دقیق است.</li>
+    <li><strong>parity یک object:</strong> logits در fp32 با <code>atol=1e-4</code> برابر upstream.</li>
+    <li><strong>parity سه object batch‌شده:</strong> IoU ≥ 0.99 برای هر object در هر frame. objectی که وسط stream اضافه می‌شود با یک سشن upstream مقایسه می‌شود که فقط همان object را دارد و از همان frame شروع می‌کند.</li>
+    <li><strong>رفتار:</strong> حذف و اضافهٔ دوباره، re-anchor، کلیک اصلاحی، تغییر اندازهٔ frame، <code>track</code> بدون object، دو بار <code>track</code> روی یک frame، و stream دویست‌فریمی که حافظه‌اش نباید رشد کند.</li>
+    <li><strong>روی سرور GPU:</strong> checkpoint واقعی SAM 2.1 روی ویدیوی <code>bedroom</code>، parity در bf16 با IoU ≥ 0.98، و benchmark یک و سه object در 512 و 1024، با زمان‌گیری sync‌شده و جدول <code>torch.profiler</code>.</li>
+  </ul>
+</section>
+
+<section>
+  <h2>Best practice</h2>
+  <div class="bp">
+    <div>
+      <h3>مدل و سشن</h3>
+      <ul>
+        <li>یک مدل برای هر process، یک <code>StreamSession</code> برای هر room. مدل را هیچ‌وقت copy نکنید.</li>
+        <li>هر session در هر لحظه فقط از یک thread استفاده شود. مدل مشترک و فقط‌خواندنی است.</li>
+        <li>همهٔ سشن‌های یک process یک اندازهٔ ورودی (مثلاً 512) داشته باشند. RoPE با تغییر اندازه جدول خودش را دوباره می‌سازد.</li>
+        <li><code>max_objects</code> را صریح تنظیم کنید. فعلاً ۳.</li>
+        <li>با پایان room، session را رها کنید و هیچ tensorی از آن را در state برنامه نگه ندارید.</li>
+      </ul>
+    </div>
+    <div>
+      <h3>ورودی و خروجی</h3>
+      <ul>
+        <li>frame باید <code>uint8</code> با ترتیب RGB باشد. frame خروجی OpenCV را قبلش از BGR به RGB تبدیل کنید.</li>
+        <li>روی CUDA از <code>torch.autocast(dtype=torch.bfloat16)</code> و <code>torch.inference_mode()</code> استفاده کنید.</li>
+        <li>logits را روی GPU با آستانهٔ 0 باینری کنید و فقط یک بار داده را به CPU منتقل کنید. اگر کافی است، از ماسک low-res استفاده کنید.</li>
+        <li>برای re-anchor از <code>reset_object</code> و بعد <code>add_prompt</code> استفاده کنید، نه <code>load_first_frame</code>.</li>
+      </ul>
+    </div>
+    <div>
+      <h3>اندازه‌گیری</h3>
+      <ul>
+        <li>زمان را با <code>torch.cuda.synchronize()</code> یا <code>torch.profiler</code> بگیرید. CUDA event دور یک call پایتون، زمان CPU را هم می‌شمارد.</li>
+        <li>عدد SM در <code>nvidia-smi</code> فقط می‌گوید آیا kernelی در حال اجرا بوده یا نه. معیار ظرفیت نیست.</li>
+        <li>هیچ ادعای FPS بدون benchmark روی سخت‌افزار واقعی ثبت نشود.</li>
+        <li>parity را بعد از هر تغییر در مسیر inference دوباره اجرا کنید.</li>
+      </ul>
+    </div>
+    <div>
+      <h3>استقرار</h3>
+      <ul>
+        <li>fork را در Dockerfile با commit SHA pin کنید، نه با <code>main</code>.</li>
+        <li>تا آماده شدن engine مشترک، roomها را بین چند process پخش کنید و NVIDIA MPS را روشن کنید.</li>
+        <li>روی stream خیلی طولانی، فاصلهٔ زمانی تا cond frame بی‌سقف بزرگ می‌شود (مثل upstream). یک سیاست re-anchor دوره‌ای در app بگذارید.</li>
+        <li>VRAM را بعد از teardown با <code>torch.cuda.memory_allocated()</code> چک کنید، نه فقط با <code>nvidia-smi</code>.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>ریسک‌ها و موارد باز</h2>
+  <div class="note bad"><p><strong>سرور GPU:</strong> host key سرور <span class="mono">94.184.177.89</span> عوض شده است. تا وقتی کلید جدید تأیید نشود، هیچ تستی روی GPU اجرا نمی‌شود.</p></div>
+  <ul>
+    <li>resize روی GPU با bilinear antialias انجام می‌شود ولی loader upstream از PIL استفاده می‌کند. تفاوت کمی در پیکسل‌ها می‌دهد. تست parity این مرحله را دور می‌زند و تست جدایی فاصلهٔ آن را محدود می‌کند.</li>
+    <li>batch در bf16 روی GPU می‌تواند اختلاف عددی کوچکی بدهد. معیار IoU ≥ 0.98 برای همین است.</li>
+    <li>سقف ۴ cond frame برای هر object انتخاب خودمان است. upstream سقفی ندارد.</li>
+    <li>کلیک روی frameی که هنوز track نشده یک cond frame جدید می‌سازد (قانون upstream). این رفتار را در app مستند کنید.</li>
+  </ul>
+</section>
+
+<section>
+  <h2>فایل‌ها</h2>
+  <ul>
+    <li>Design: <code>docs/superpowers/specs/2026-10-24-stream-predictor-design.md</code></li>
+    <li>Plan: <code>docs/superpowers/plans/2026-10-24-stream-predictor.md</code></li>
+    <li>کد آینده: <code>sam2/sam2_stream_predictor.py</code>، <code>sam2/stream/</code>، <code>tests/</code>، <code>tools/benchmark_stream.py</code>، <code>tools/stream_parity.py</code></li>
+  </ul>
+</section>
+
+<footer>branch <span class="mono">feat/stream-predictor</span> روی <span class="mono">github.com/rghavipour/sam2</span>. اعداد عملکرد از SLA report تاریخ 2026-09-24 در <span class="mono">dahi-live-ai/docs/sla</span> آمده‌اند.</footer>
+</div>
