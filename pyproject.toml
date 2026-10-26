@@ -4,3 +4,9 @@ requires = [
     "torch>=2.5.1",
     ]
 build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = [
+    "ignore:.*Skipping the post-processing step.*:UserWarning",
+]

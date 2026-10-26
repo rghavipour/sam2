@@ -51,6 +51,7 @@ EXTRA_PACKAGES = {
     ],
     "dev": [
         "black==24.2.0",
+        "pytest>=8.0",
         "usort==1.0.2",
         "ufmt==2.0.0b2",
         "fvcore>=0.1.5.post20221221",
