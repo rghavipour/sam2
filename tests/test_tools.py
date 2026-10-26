@@ -46,3 +46,24 @@ def test_gpu_tool_help(script):
     )
     assert result.returncode == 0, result.stderr
     assert "--size" in result.stdout and "--video-dir" in result.stdout
+
+
+def test_cuda_kernel_ms_counts_device_events_once():
+    sys.path.insert(0, str(ROOT / "tools"))
+    from stream_common import cuda_kernel_ms
+
+    class Event:
+        def __init__(self, device_type, us, annotation=False):
+            self.device_type = device_type
+            self.self_device_time_total = us
+            self.is_user_annotation = annotation
+
+    cpu, cuda = torch.autograd.DeviceType.CPU, torch.autograd.DeviceType.CUDA
+    # a CPU op row carries the time of the kernel it launched; the kernel row again
+    events = [
+        Event(cpu, 3000),
+        Event(cuda, 3000),
+        Event(cuda, 1000),
+        Event(cuda, 500, True),
+    ]
+    assert cuda_kernel_ms(events, frames=2) == 2.0

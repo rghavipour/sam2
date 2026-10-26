@@ -86,3 +86,19 @@ def mask_iou(a, b):
 
 def percentile(values, q):
     return float(np.percentile(np.asarray(values), q))
+
+
+def cuda_kernel_ms(events, frames):
+    """
+    CUDA kernel time per frame from `profiler.key_averages()`.
+
+    CPU-op rows also carry the device time of the kernels they launch, so only
+    device rows are summed (as the profiler's own table totals do).
+    """
+    cuda = torch.autograd.DeviceType.CUDA
+    total_us = sum(
+        e.self_device_time_total
+        for e in events
+        if e.device_type == cuda and not getattr(e, "is_user_annotation", False)
+    )
+    return total_us / 1000.0 / frames

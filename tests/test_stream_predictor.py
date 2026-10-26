@@ -328,3 +328,20 @@ def test_memory_bounded_long_stream(stream_predictor, upstream_images):
     assert sorted(session.objects[1].cond_outputs) == [0, 90, 120, 150]
     assert not hasattr(session, "images")
     assert _session_storage_bytes(session) <= 1.01 * bytes_at_160
+
+
+def test_prompt_tensors_follow_session_device(stream_predictor):
+    from sam2.stream.state import StreamSession
+
+    # "meta" stands in for a second device (a CUDA session with CUDA prompt tensors)
+    meta = torch.device("meta")
+    session = StreamSession(device=meta, video_h=240, video_w=320)
+    points, labels = stream_predictor._prompt_points(
+        session,
+        torch.zeros(1, 2, device=meta),
+        torch.ones(1, dtype=torch.int32, device=meta),
+        torch.zeros(4, device=meta),
+        True,
+    )
+    assert points.device == meta and labels.device == meta
+    assert points.shape == (1, 3, 2) and labels.shape == (1, 3)

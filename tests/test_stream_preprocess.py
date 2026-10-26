@@ -56,3 +56,13 @@ def test_rejects_bad_frames(frame):
 
     with pytest.raises(ValueError, match="frame must be a uint8 HxWx3 RGB array"):
         preprocess_frame(frame, 256, CPU)
+
+
+def test_accepts_negative_stride_frames(rgb_frames):
+    from sam2.stream.preprocess import preprocess_frame
+
+    bgr = np.ascontiguousarray(rgb_frames[0][..., ::-1])
+    rgb_view = bgr[..., ::-1]  # the usual OpenCV BGR -> RGB view
+    a, _, _ = preprocess_frame(rgb_view, 256, CPU)
+    b, _, _ = preprocess_frame(np.ascontiguousarray(rgb_view), 256, CPU)
+    assert torch.equal(a, b)

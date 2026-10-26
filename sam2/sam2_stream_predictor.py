@@ -280,11 +280,13 @@ class SAM2StreamPredictor(SAM2Base):
 
     def _prompt_points(self, session, points, labels, box, normalize_coords):
         """Points (and box corners) in model input coordinates, [1, P, 2] / [1, P]."""
+        # everything on the session device, whatever device the prompt tensors are on
+        device = session.device
         if points is None:
             points = torch.zeros(0, 2, dtype=torch.float32)
             labels = torch.zeros(0, dtype=torch.int32)
-        points = torch.as_tensor(points, dtype=torch.float32)
-        labels = torch.as_tensor(labels, dtype=torch.int32)
+        points = torch.as_tensor(points, dtype=torch.float32).to(device)
+        labels = torch.as_tensor(labels, dtype=torch.int32).to(device)
         if points.dim() == 2:
             points = points.unsqueeze(0)
         if labels.dim() == 1:
@@ -296,20 +298,22 @@ class SAM2StreamPredictor(SAM2Base):
                 f"labels must be [P] matching points, got {tuple(labels.shape)}"
             )
         if box is not None:
-            box = torch.as_tensor(box, dtype=torch.float32)
+            box = torch.as_tensor(box, dtype=torch.float32).to(device)
             if box.numel() != 4:
                 raise ValueError(
                     f"box must be [x1, y1, x2, y2], got {tuple(box.shape)}"
                 )
             # the box goes first as two points with labels 2 and 3 (as SAM 2 is trained)
-            box_coords = box.to(points.device).reshape(1, 2, 2)
-            box_labels = torch.tensor([[2, 3]], dtype=torch.int32)
+            box_coords = box.reshape(1, 2, 2)
+            box_labels = torch.tensor([[2, 3]], dtype=torch.int32, device=device)
             points = torch.cat([box_coords, points], dim=1)
             labels = torch.cat([box_labels, labels], dim=1)
         if normalize_coords:
-            points = points / torch.tensor([session.video_w, session.video_h])
+            points = points / torch.tensor(
+                [session.video_w, session.video_h], dtype=torch.float32, device=device
+            )
         points = points * self.image_size
-        return points.to(session.device), labels.to(session.device)
+        return points, labels
 
     def _prompt_mask(self, session, mask):
         """A binary mask resized to the model input, [1, 1, S, S] float."""

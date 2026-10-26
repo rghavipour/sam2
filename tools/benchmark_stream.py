@@ -22,6 +22,7 @@ import torch
 from stream_common import (
     autocast,
     base_parser,
+    cuda_kernel_ms,
     cuda_or_skip,
     load_rgb_frames,
     NOTEBOOK_PROMPTS,
@@ -101,10 +102,9 @@ def main():
             torch.cuda.synchronize()
         wall_ms = (time.perf_counter() - t0) * 1000.0 / PROFILE_FRAMES
         events = prof.key_averages()
-        cuda_us = sum(getattr(e, "self_device_time_total", 0) for e in events)
         print(
             f"profiler: wall {wall_ms:.2f} ms/frame  "
-            f"CUDA kernels {cuda_us / 1000.0 / PROFILE_FRAMES:.2f} ms/frame"
+            f"CUDA kernels {cuda_kernel_ms(events, PROFILE_FRAMES):.2f} ms/frame"
         )
         print(events.table(sort_by="self_cpu_time_total", row_limit=15))
         print(events.table(sort_by="self_device_time_total", row_limit=15))

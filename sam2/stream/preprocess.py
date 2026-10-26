@@ -23,6 +23,9 @@ def preprocess_frame(
     frame height and width.
     """
     if isinstance(frame, np.ndarray):
+        if any(stride < 0 for stride in frame.strides):
+            # e.g. the `bgr[..., ::-1]` view used to turn OpenCV frames into RGB
+            frame = np.ascontiguousarray(frame)
         t = torch.from_numpy(frame)
     elif isinstance(frame, torch.Tensor):
         t = frame
