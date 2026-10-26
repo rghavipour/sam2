@@ -217,3 +217,114 @@ def test_batched_equals_unbatched(
         )
         for i in range(len(outs_b[t].obj_ids)):
             assert iou(outs_b[t].mask_logits[i], outs_u[t].mask_logits[i]) >= 0.99
+
+
+def _session_storage_bytes(session):
+    """Bytes of the distinct tensor storages reachable from a session."""
+    seen, total = set(), 0
+
+    def visit(x):
+        nonlocal total
+        if isinstance(x, torch.Tensor):
+            storage = x.untyped_storage()
+            if storage.data_ptr() not in seen:
+                seen.add(storage.data_ptr())
+                total += storage.nbytes()
+        elif isinstance(x, dict):
+            for v in x.values():
+                visit(v)
+        elif isinstance(x, (list, tuple)):
+            for v in x:
+                visit(v)
+        elif hasattr(x, "__dataclass_fields__"):
+            for name in x.__dataclass_fields__:
+                visit(getattr(x, name))
+
+    visit(session)
+    return total
+
+
+def test_remove_then_readd_is_fresh(stream_predictor, upstream_images):
+    p = stream_predictor
+    session = p.create_session()
+    for t in range(8):
+        p.set_preprocessed_frame(session, upstream_images[t], VIDEO_HW)
+        if t == 0:
+            p.add_prompt(session, 1, box=BOXES[1])
+            p.add_prompt(session, 2, box=BOXES[2])
+        if t == 4:
+            p.remove_object(session, 1)
+            assert session.obj_ids == [2]
+        out = p.track(session)
+    assert out.obj_ids == [2]
+    p.remove_object(session, 99)  # unknown id: no-op
+    with pytest.raises(KeyError):
+        p.remove_object(session, 99, strict=True)
+
+    p.add_prompt(session, 1, box=BOXES[1])
+    obj = session.objects[1]
+    assert session.obj_ids == [2, 1]
+    assert obj.cond_outputs == {} and len(obj.non_cond_outputs) == 0
+    assert obj.pending_is_cond
+    p.set_preprocessed_frame(session, upstream_images[8], VIDEO_HW)
+    assert sorted(obj.cond_outputs) == [7]
+
+
+def test_reset_object_placeholder_until_prompt(stream_predictor, upstream_images):
+    from sam2.modeling.sam2_base import NO_OBJ_SCORE
+
+    p = stream_predictor
+    ref, _ = run_stream(p, upstream_images, VIDEO_HW, {0: [_box(2)]}, num_frames=10)
+    session = p.create_session()
+    for t in range(10):
+        p.set_preprocessed_frame(session, upstream_images[t], VIDEO_HW)
+        if t == 0:
+            p.add_prompt(session, 1, box=BOXES[1])
+            p.add_prompt(session, 2, box=BOXES[2])
+        if t == 5:
+            p.reset_object(session, 1)
+        out = p.track(session)
+        if 5 <= t < 8:
+            assert out.obj_ids == [1, 2]
+            assert (out.mask_logits[0] == NO_OBJ_SCORE).all()
+            assert out.object_score_logits[0].item() == NO_OBJ_SCORE
+        # the other object is not affected
+        torch.testing.assert_close(
+            out.mask_logits[1:2], ref[t].mask_logits, atol=1e-4, rtol=0
+        )
+        if t == 7:
+            p.add_prompt(session, 1, box=BOXES[1])
+    obj = session.objects[1]
+    assert sorted(obj.cond_outputs) == [7]
+    assert out.object_score_logits[0].item() != NO_OBJ_SCORE
+    with pytest.raises(KeyError):
+        p.reset_object(session, 99)
+
+    p.reset_session(session)
+    assert session.obj_ids == [] and session.frame_idx == -1
+    assert session.backbone_out is None and session.constants == {}
+
+
+def test_memory_bounded_long_stream(stream_predictor, upstream_images):
+    p = stream_predictor
+    session = p.create_session()
+    n = len(upstream_images)
+    for t in range(200):
+        p.set_preprocessed_frame(session, upstream_images[t % n], VIDEO_HW)
+        if t == 0:
+            for k in (1, 2, 3):
+                p.add_prompt(session, k, box=BOXES[k])
+        if t in (30, 60, 90, 120, 150):
+            # a new conditioning frame for object 1 each time (capped at 4)
+            p.add_prompt(session, 1, points=[[45, 35]], labels=[1])
+        p.track(session)
+        if t == 160:
+            # all objects have a full window and object 1 has 4 cond frames by now
+            bytes_at_160 = _session_storage_bytes(session)
+    for obj in session.objects.values():
+        # the 15 frames the next frame can read, plus the current frame
+        assert len(obj.non_cond_outputs) <= 16
+        assert len(obj.cond_outputs) <= 4
+    assert sorted(session.objects[1].cond_outputs) == [0, 90, 120, 150]
+    assert not hasattr(session, "images")
+    assert _session_storage_bytes(session) <= 1.01 * bytes_at_160

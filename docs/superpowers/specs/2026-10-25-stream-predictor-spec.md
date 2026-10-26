@@ -374,8 +374,8 @@ newest key. (`SAM2Base.max_cond_frames_in_attn` still applies on top, through
 `select_closest_cond_frames`.)
 
 With the shipped configs (`num_maskmem=7`, stride 1,
-`max_obj_ptrs_in_encoder=16`) an object holds at most 15 non-cond outputs and 4
-cond outputs.
+`max_obj_ptrs_in_encoder=16`) an object holds at most 16 non-cond outputs (the
+15 the next frame can read, plus the current frame) and 4 cond outputs.
 
 ---
 
@@ -610,9 +610,9 @@ Frames are RGB. BGR input is not detected; it is the caller's job.
   `test_box_with_clear_old_points_false_raises`, `test_max_objects`.
 - `test_remove_then_readd_is_fresh`, `test_reset_object_placeholder_until_prompt`.
 - `test_memory_bounded_long_stream`: 3 objects, 200 frames:
-  `len(non_cond_outputs) <= 15`, `len(cond_outputs) <= 4` for every object;
+  `len(non_cond_outputs) <= 16`, `len(cond_outputs) <= 4` for every object;
   total bytes of tensors reachable from the session at frame 200 `<=` 1.01×
-  frame 50.
+  frame 160.
 - `test_batched_equals_unbatched`: same schedule through `stream_predictor`
   and `stream_predictor_unbatched`: IoU ≥ 0.99 per object per frame and
   `atol=1e-3` on logits.

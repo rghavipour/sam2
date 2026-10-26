@@ -125,6 +125,36 @@ class SAM2StreamPredictor(SAM2Base):
         session.backbone_out = self.forward_image(session.image)
         return session.frame_idx
 
+    def reset_object(self, session, obj_id):
+        """Drop an object's memory but keep its id and position (e.g. to re-anchor)."""
+        obj = session.objects[obj_id]
+        obj.cond_outputs = {}
+        obj.non_cond_outputs.clear()
+        obj.pending = None
+        obj.pending_is_cond = False
+        obj.point_inputs = None
+        obj.point_inputs_frame = -1
+        obj.tracked_frame = -1
+        obj.first_cond_frame = None
+
+    def remove_object(self, session, obj_id, strict=False):
+        """Stop tracking an object; unknown ids are ignored unless `strict`."""
+        if obj_id not in session.objects:
+            if strict:
+                raise KeyError(f"unknown object id {obj_id!r}")
+            return
+        del session.objects[obj_id]
+
+    def reset_session(self, session):
+        """Drop every object and the current frame; the session starts over."""
+        session.objects.clear()
+        session.constants = {}
+        session.backbone_out = None
+        session.image = None
+        session.feature_cache = {}
+        session.frame_idx = -1
+        session.video_h = session.video_w = 0
+
     def _require_frame(self, session):
         if session.frame_idx < 0 or session.backbone_out is None:
             raise RuntimeError("call set_frame() before add_prompt() or track()")
