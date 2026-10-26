@@ -171,9 +171,13 @@ def __init__(self, fill_hole_area=0, non_overlap_masks=False,
 - `ValueError("max_cond_frames_per_object must be >= 1")` if `< 1`.
 - `ValueError("SAM2StreamPredictor needs num_maskmem >= 1")` if
   `self.num_maskmem == 0`.
-- If `self.non_overlap_masks_for_mem_enc` is True: log a warning and set it to
-  False. Upstream runs the memory encoder per object (batch 1), where this flag
-  has no effect; batching rows must not turn it on.
+- `non_overlap_masks_for_mem_enc` (config) becomes `self.non_overlap_across_objects`
+  and SAM2Base's own flag is set to False. When on, every mask that enters the
+  memory encoder (tracked rows in `track`, prompt outputs in finalize) is first
+  constrained with `_apply_non_overlapping_constraints` against the other objects
+  of the session on that frame (`non_overlap_rows`), so each pixel stays positive
+  for at most one object. This is legacy SAM 2's multi-object behaviour; with the
+  flag off (the default) objects stay independent, as in upstream.
 
 ### 5.2 Builder (`sam2/build_sam.py`)
 
@@ -529,7 +533,7 @@ Frames are RGB. BGR input is not detected; it is the caller's job.
 | `num_frames` for pointers | video length | `STREAM_NUM_FRAMES` (equal for videos ≥ 16 frames) |
 | Cond frames per object | unbounded | `max_cond_frames_per_object` (default 4) |
 | Non-cond history | whole video | window from `min_needed_frame` |
-| `non_overlap_masks_for_mem_enc` | no effect (batch 1) | forced off |
+| `non_overlap_masks_for_mem_enc` | no effect (batch 1) | applied across all objects of the session (legacy behaviour; matches legacy in tests) |
 
 ---
 

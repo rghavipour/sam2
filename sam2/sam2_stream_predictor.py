@@ -52,14 +52,11 @@ class SAM2StreamPredictor(SAM2Base):
             raise ValueError("max_cond_frames_per_object must be >= 1")
         if self.num_maskmem == 0:
             raise ValueError("SAM2StreamPredictor needs num_maskmem >= 1")
-        if self.non_overlap_masks_for_mem_enc:
-            # upstream runs the memory encoder per object (batch 1), where this flag has
-            # no effect; batching rows must not turn it on
-            logger.warning(
-                "non_overlap_masks_for_mem_enc is not supported by SAM2StreamPredictor; "
-                "turning it off"
-            )
-            self.non_overlap_masks_for_mem_enc = False
+        # `non_overlap_masks_for_mem_enc` is applied here across all objects of a session
+        # (see `non_overlap_rows`); SAM2Base would only see one batch of rows, so its own
+        # flag is turned off
+        self.non_overlap_across_objects = bool(self.non_overlap_masks_for_mem_enc)
+        self.non_overlap_masks_for_mem_enc = False
         self.fill_hole_area = fill_hole_area
         self.non_overlap_masks = non_overlap_masks
         self.batch_objects = batch_objects
@@ -359,15 +356,21 @@ class SAM2StreamPredictor(SAM2Base):
                 groups = group_rows(rows)
             else:
                 groups = [[i] for i in range(len(rows))]
+            heads = [None] * len(rows)
             for group in groups:
-                outs = self._run_rows(session, [rows[i] for i in group])
-                for i, out in zip(group, outs):
-                    to_track[i].non_cond_outputs[f] = out
-                    to_track[i].tracked_frame = f
+                for i, out in zip(
+                    group, self._run_heads(session, [rows[i] for i in group])
+                ):
+                    heads[i] = out
+            self._encode_rows(session, to_track, heads)
+            for obj, out in zip(to_track, heads):
+                obj.non_cond_outputs[f] = self._compact(session, out)
+                obj.tracked_frame = f
         return self._assemble_output(session)
 
-    def _run_rows(self, session, rows):
-        """`track_step` (with memory encoding) for rows that share one memory layout."""
+    def _run_heads(self, session, rows):
+        """Memory attention and SAM heads (`track_step` up to the memory encoder) for
+        rows that share one memory layout; one output dict per row."""
         B = len(rows)
         feats, pos, sizes = self._features(session, B)
         memory, memory_pos, num_obj_ptr_tokens = stack_rows(rows)
@@ -402,25 +405,59 @@ class SAM2StreamPredictor(SAM2Base):
             high_res_features=high_res_features,
             multimask_output=self._use_multimask(False, None),
         )
-        # as upstream, the memory encoder sees the masks before hole filling
-        maskmem_features, maskmem_pos_enc = self._encode_new_memory(
-            current_vision_feats=feats,
-            feat_sizes=sizes,
-            pred_masks_high_res=high_res_masks,
-            object_score_logits=object_score_logits,
-            is_mask_from_pts=False,
-        )
-        outs = []
-        for i in range(B):
-            out = {
-                "maskmem_features": maskmem_features[i : i + 1],
-                "maskmem_pos_enc": [x[i : i + 1] for x in maskmem_pos_enc],
+        return [
+            {
                 "pred_masks": low_res_masks[i : i + 1],
+                "pred_masks_high_res": high_res_masks[i : i + 1],
                 "obj_ptr": obj_ptr[i : i + 1],
                 "object_score_logits": object_score_logits[i : i + 1],
             }
-            outs.append(self._compact(session, out))
-        return outs
+            for i in range(B)
+        ]
+
+    def _encode_rows(self, session, objs, heads):
+        """Memory of the tracked rows; as upstream, from the masks before hole filling."""
+        high_res_masks = torch.cat([h["pred_masks_high_res"] for h in heads], dim=0)
+        scores = torch.cat([h["object_score_logits"] for h in heads], dim=0)
+        if self.non_overlap_across_objects:
+            high_res_masks = non_overlap_rows(
+                self, high_res_masks, self._competitor_masks(session, objs)
+            )
+        n = len(heads)
+        batches = [list(range(n))] if self.batch_objects else [[i] for i in range(n)]
+        for idx in batches:
+            feats, _, sizes = self._features(session, len(idx))
+            maskmem_features, maskmem_pos_enc = self._encode_new_memory(
+                current_vision_feats=feats,
+                feat_sizes=sizes,
+                pred_masks_high_res=high_res_masks[idx],
+                object_score_logits=scores[idx],
+                is_mask_from_pts=False,
+            )
+            for j, i in enumerate(idx):
+                heads[i]["maskmem_features"] = maskmem_features[j : j + 1]
+                heads[i]["maskmem_pos_enc"] = [x[j : j + 1] for x in maskmem_pos_enc]
+
+    def _competitor_masks(self, session, exclude):
+        """High-res masks, on the current frame, of the session's objects not in `exclude`."""
+        f = session.frame_idx
+        skip = {id(obj) for obj in exclude}
+        masks = []
+        for obj in session.objects.values():
+            if id(obj) in skip:
+                continue
+            if obj.pending is not None:
+                masks.append(obj.pending["pred_masks"])
+            elif obj.tracked_frame == f and f in obj.non_cond_outputs:
+                masks.append(obj.non_cond_outputs[f]["pred_masks"])
+        if not masks:
+            return None
+        return F.interpolate(
+            torch.cat(masks, dim=0).to(session.device).float(),
+            size=(self.image_size, self.image_size),
+            mode="bilinear",
+            align_corners=False,
+        )
 
     def _finalize(self, session):
         """Encode the memory of this frame's prompt outputs and commit them."""
@@ -428,24 +465,30 @@ class SAM2StreamPredictor(SAM2Base):
         if not pending:
             return
         f = session.frame_idx
-        batches = [pending] if self.batch_objects else [[obj] for obj in pending]
-        for batch in batches:
+        pred_masks = torch.cat([obj.pending["pred_masks"] for obj in pending], dim=0)
+        all_high_res = F.interpolate(
+            pred_masks.to(session.device),
+            size=(self.image_size, self.image_size),
+            mode="bilinear",
+            align_corners=False,
+        )
+        all_scores = torch.cat(
+            [obj.pending["object_score_logits"] for obj in pending], dim=0
+        )
+        if self.non_overlap_across_objects:
+            all_high_res = non_overlap_rows(
+                self, all_high_res, self._competitor_masks(session, pending)
+            )
+        n = len(pending)
+        batches = [list(range(n))] if self.batch_objects else [[i] for i in range(n)]
+        for idx in batches:
+            batch = [pending[i] for i in idx]
             feats, _, sizes = self._features(session, len(batch))
-            pred_masks = torch.cat([obj.pending["pred_masks"] for obj in batch], dim=0)
-            high_res_masks = F.interpolate(
-                pred_masks.to(session.device),
-                size=(self.image_size, self.image_size),
-                mode="bilinear",
-                align_corners=False,
-            )
-            scores = torch.cat(
-                [obj.pending["object_score_logits"] for obj in batch], dim=0
-            )
             maskmem_features, maskmem_pos_enc = self._encode_new_memory(
                 current_vision_feats=feats,
                 feat_sizes=sizes,
-                pred_masks_high_res=high_res_masks,
-                object_score_logits=scores,
+                pred_masks_high_res=all_high_res[idx],
+                object_score_logits=all_scores[idx],
                 # these frames are what the user interacted with
                 is_mask_from_pts=True,
             )
@@ -541,3 +584,20 @@ class SAM2StreamPredictor(SAM2Base):
             low_res_mask_logits=low_res_masks,
             object_score_logits=torch.cat(scores, dim=0),
         )
+
+
+def non_overlap_rows(model, rows_high_res, competitor_high_res):
+    """
+    `rows_high_res` after SAM 2's non-overlapping constraint, applied against each other
+    and against `competitor_high_res` (the other objects of the session on this frame):
+    each pixel stays positive for at most the highest-scoring object.
+    """
+    if competitor_high_res is not None and competitor_high_res.size(0) > 0:
+        competitor_high_res = competitor_high_res.to(rows_high_res)
+        all_masks = torch.cat([rows_high_res, competitor_high_res], dim=0)
+    else:
+        all_masks = rows_high_res
+    if all_masks.size(0) == 1:
+        return rows_high_res
+    constrained = model._apply_non_overlapping_constraints(all_masks)
+    return constrained[: rows_high_res.size(0)]
