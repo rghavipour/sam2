@@ -132,6 +132,34 @@ def group_rows(rows):
     return list(groups.values())
 
 
+def stack_rows_padded(rows, hw):
+    """
+    Stack rows of different memory layouts into one batch: each row's spatial
+    memory (frames of `hw` tokens) is padded with zero frames to the longest, and
+    its object-pointer tokens with zero tokens to the most. Returns (memory,
+    memory_pos, pointer tokens, mask [B, M], True for real tokens). With the mask,
+    memory attention ignores the padding; rotary positions repeat every `hw` keys
+    and pointers stay last, so every real key keeps its position.
+    """
+    frames = [(row.memory.shape[0] - row.num_obj_ptr_tokens) // hw for row in rows]
+    n_ptr = max(row.num_obj_ptr_tokens for row in rows)
+    n_spatial = max(frames) * hw
+    first = rows[0].memory
+    B, M, C = len(rows), n_spatial + n_ptr, first.shape[-1]
+    memory = first.new_zeros(M, B, C)
+    memory_pos = rows[0].memory_pos.new_zeros(M, B, C)
+    mask = torch.zeros(B, M, dtype=torch.bool, device=first.device)
+    for i, (row, f) in enumerate(zip(rows, frames)):
+        s, p = f * hw, row.num_obj_ptr_tokens
+        memory[:s, i] = row.memory[:s, 0]
+        memory_pos[:s, i] = row.memory_pos[:s, 0]
+        memory[n_spatial : n_spatial + p, i] = row.memory[s:, 0]
+        memory_pos[n_spatial : n_spatial + p, i] = row.memory_pos[s:, 0]
+        mask[i, :s] = True
+        mask[i, n_spatial : n_spatial + p] = True
+    return memory, memory_pos, n_ptr, mask
+
+
 def stack_rows(rows):
     """Stack rows of one memory layout along the batch dimension."""
     key = rows[0].key

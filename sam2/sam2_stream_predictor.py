@@ -10,7 +10,12 @@ import torch
 import torch.nn.functional as F
 
 from sam2.modeling.sam2_base import NO_OBJ_SCORE, SAM2Base
-from sam2.stream.memory import build_row_memory, group_rows, stack_rows
+from sam2.stream.memory import (
+    build_row_memory,
+    group_rows,
+    stack_rows,
+    stack_rows_padded,
+)
 from sam2.stream.preprocess import preprocess_frame
 from sam2.stream.state import (
     evict_cond_frames,
@@ -61,9 +66,14 @@ class SAM2StreamPredictor(SAM2Base):
         self.non_overlap_masks = non_overlap_masks
         self.batch_objects = batch_objects
         self.max_cond_frames_per_object = max_cond_frames_per_object
-        # rows tracked and memory-layout groups they ran in, in the last track_many
+        # rows of different memory layouts run in one memory-attention call, padded
+        # to one shape with the padding masked out (see stack_rows_padded)
+        self.pad_memory_layouts = True
+        # rows tracked, the memory-attention calls they ran in, and how many of
+        # them were padded, in the last track_many
         self.last_rows = 0
         self.last_row_groups = 0
+        self.last_padded_rows = 0
 
     # ------------------------------------------------------------------------------
     # Sessions and frames
@@ -402,11 +412,14 @@ class SAM2StreamPredictor(SAM2Base):
             per.append((session, to_track, rows))
 
         keys = [(si, oi) for si, (_, _, rows) in enumerate(per) for oi in range(len(rows))]
-        self.last_rows = self.last_row_groups = 0
+        self.last_rows = self.last_row_groups = self.last_padded_rows = 0
         if keys:
             all_rows = [per[si][2][oi] for si, oi in keys]
             if self.batch_objects:
                 groups = group_rows(all_rows)
+                if self.pad_memory_layouts and len(groups) > 1:
+                    groups = [list(range(len(all_rows)))]
+                    self.last_padded_rows = len(all_rows)
             else:
                 groups = [[i] for i in range(len(all_rows))]
             self.last_rows, self.last_row_groups = len(all_rows), len(groups)
@@ -447,19 +460,26 @@ class SAM2StreamPredictor(SAM2Base):
 
     def _run_heads(self, row_sessions, rows):
         """Memory attention and SAM heads (`track_step` up to the memory encoder) for
-        rows that share one memory layout (row i on row_sessions[i]); one output dict
-        per row."""
+        rows (row i on row_sessions[i]); rows of different memory layouts are padded
+        to one (stack_rows_padded). One output dict per row."""
         B = len(rows)
         feats, pos, sizes = self._features_rows(row_sessions)
-        memory, memory_pos, num_obj_ptr_tokens = stack_rows(rows)
+        H, W = sizes[-1]
+        memory_mask = None
+        if all(row.key == rows[0].key for row in rows):
+            memory, memory_pos, num_obj_ptr_tokens = stack_rows(rows)
+        else:
+            memory, memory_pos, num_obj_ptr_tokens, memory_mask = stack_rows_padded(
+                rows, H * W
+            )
         pix_feat = self.memory_attention(
             curr=feats[-1:],
             curr_pos=pos[-1:],
             memory=memory,
             memory_pos=memory_pos,
             num_obj_ptr_tokens=num_obj_ptr_tokens,
+            memory_mask=memory_mask,
         )
-        H, W = sizes[-1]
         pix_feat = pix_feat.permute(1, 2, 0).view(B, self.hidden_dim, H, W)
         if len(feats) > 1:
             high_res_features = [

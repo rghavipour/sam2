@@ -6,7 +6,7 @@
 
 import math
 from functools import partial
-from typing import Tuple, Type
+from typing import Optional, Tuple, Type
 
 import torch
 import torch.nn.functional as F
@@ -273,7 +273,12 @@ class RoPEAttention(Attention):
         self.rope_k_repeat = rope_k_repeat
 
     def forward(
-        self, q: Tensor, k: Tensor, v: Tensor, num_k_exclude_rope: int = 0
+        self,
+        q: Tensor,
+        k: Tensor,
+        v: Tensor,
+        num_k_exclude_rope: int = 0,
+        attn_mask: Optional[Tensor] = None,
     ) -> Tensor:
         # Input projections
         q = self.q_proj(q)
@@ -302,8 +307,10 @@ class RoPEAttention(Attention):
         )
 
         dropout_p = self.dropout_p if self.training else 0.0
-        # Attention
-        out = F.scaled_dot_product_attention(q, k, v, dropout_p=dropout_p)
+        # Attention; attn_mask (bool, True = attend) broadcasts to B x heads x Nq x Nk
+        out = F.scaled_dot_product_attention(
+            q, k, v, attn_mask=attn_mask, dropout_p=dropout_p
+        )
 
         out = self._recombine_heads(out)
         out = self.out_proj(out)
