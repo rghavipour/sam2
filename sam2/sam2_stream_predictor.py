@@ -61,6 +61,9 @@ class SAM2StreamPredictor(SAM2Base):
         self.non_overlap_masks = non_overlap_masks
         self.batch_objects = batch_objects
         self.max_cond_frames_per_object = max_cond_frames_per_object
+        # rows tracked and memory-layout groups they ran in, in the last track_many
+        self.last_rows = 0
+        self.last_row_groups = 0
 
     # ------------------------------------------------------------------------------
     # Sessions and frames
@@ -399,12 +402,14 @@ class SAM2StreamPredictor(SAM2Base):
             per.append((session, to_track, rows))
 
         keys = [(si, oi) for si, (_, _, rows) in enumerate(per) for oi in range(len(rows))]
+        self.last_rows = self.last_row_groups = 0
         if keys:
             all_rows = [per[si][2][oi] for si, oi in keys]
             if self.batch_objects:
                 groups = group_rows(all_rows)
             else:
                 groups = [[i] for i in range(len(all_rows))]
+            self.last_rows, self.last_row_groups = len(all_rows), len(groups)
             heads = {}
             for group in groups:
                 members = [keys[i] for i in group]

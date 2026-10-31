@@ -149,3 +149,12 @@ def test_bad_input(stream_predictor):
     assert stream_predictor.track_many([]) == []
     with pytest.raises(RuntimeError):
         stream_predictor.track_many([stream_predictor.create_session()])  # no frame set
+
+
+def test_last_track_counts_rows_and_layout_groups(stream_predictor):
+    sched = _prompt_all(2)
+    _run(stream_predictor, 2, 3, sched, batched=True)
+    assert stream_predictor.last_rows == 6
+    assert stream_predictor.last_row_groups == 1  # same layout in both sessions
+    stream_predictor.track_many([])
+    assert (stream_predictor.last_rows, stream_predictor.last_row_groups) == (0, 0)
