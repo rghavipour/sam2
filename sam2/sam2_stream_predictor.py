@@ -95,12 +95,44 @@ class SAM2StreamPredictor(SAM2Base):
         return self._advance(session, image, video_h, video_w)
 
     @torch.inference_mode()
+    def set_frames(self, sessions, frames):
+        """`set_frame` for several sessions (one frame each) with one image-encoder
+        pass over all their frames. Returns the new frame index of each session."""
+        sessions, frames = list(sessions), list(frames)
+        if len(sessions) != len(frames):
+            raise ValueError(
+                f"{len(sessions)} sessions but {len(frames)} frames; give one frame per session"
+            )
+        if len({id(s) for s in sessions}) != len(sessions):
+            raise ValueError("a session can take only one frame per set_frames() call")
+        if not sessions:
+            return []
+        pre = [
+            preprocess_frame(f, self.image_size, s.device)
+            for s, f in zip(sessions, frames)
+        ]
+        devices = {str(img.device) for img, _, _ in pre}
+        if len(devices) > 1:
+            raise ValueError(f"sessions are on different devices: {sorted(devices)}")
+        backbone_out = self.forward_image(torch.stack([img for img, _, _ in pre]))
+        return [
+            self._advance(s, img, h, w, backbone_out=_backbone_row(backbone_out, k))
+            for k, (s, (img, h, w)) in enumerate(zip(sessions, pre))
+        ]
+
+    @torch.inference_mode()
     def step(self, session, frame):
         """`set_frame` followed by `track`."""
         self.set_frame(session, frame)
         return self.track(session)
 
-    def _advance(self, session, image, video_h, video_w):
+    @torch.inference_mode()
+    def step_many(self, sessions, frames):
+        """`set_frames` followed by `track_many`."""
+        self.set_frames(sessions, frames)
+        return self.track_many(sessions)
+
+    def _advance(self, session, image, video_h, video_w, backbone_out=None):
         if session.frame_idx >= 0:
             self._finalize(session)
             keep_from = min_needed_frame(
@@ -119,7 +151,9 @@ class SAM2StreamPredictor(SAM2Base):
         session.frame_idx += 1
         session.video_h, session.video_w = video_h, video_w
         session.image = image.unsqueeze(0)
-        session.backbone_out = self.forward_image(session.image)
+        if backbone_out is None:
+            backbone_out = self.forward_image(session.image)
+        session.backbone_out = backbone_out
         return session.frame_idx
 
     def reset_object(self, session, obj_id):
@@ -337,42 +371,81 @@ class SAM2StreamPredictor(SAM2Base):
     @torch.inference_mode()
     def track(self, session):
         """Masks of all objects on the current frame, tracking those that need it."""
-        self._require_frame(session)
-        f = session.frame_idx
-        to_track = []
-        for obj in session.objects.values():
-            if obj.pending is not None:
-                obj.tracked_frame = f
-            elif obj.tracked_frame == f or not obj.cond_outputs:
-                continue
-            else:
-                to_track.append(obj)
+        return self.track_many([session])[0]
 
-        if to_track:
+    @torch.inference_mode()
+    def track_many(self, sessions):
+        """`track` for several sessions in one pass: rows of every session that share
+        a memory layout run memory attention and the SAM heads together, and all rows
+        share one memory-encoder call. Each row uses its own session's frame features.
+        Returns one output per session, in order."""
+        sessions = list(sessions)
+        for session in sessions:
+            self._require_frame(session)
+        per = []  # (session, objects to track, their rows)
+        for session in sessions:
+            f = session.frame_idx
+            to_track = []
+            for obj in session.objects.values():
+                if obj.pending is not None:
+                    obj.tracked_frame = f
+                elif obj.tracked_frame == f or not obj.cond_outputs:
+                    continue
+                else:
+                    to_track.append(obj)
             rows = [
                 build_row_memory(self, obj, f, STREAM_NUM_FRAMES) for obj in to_track
             ]
-            if self.batch_objects:
-                groups = group_rows(rows)
-            else:
-                groups = [[i] for i in range(len(rows))]
-            heads = [None] * len(rows)
-            for group in groups:
-                for i, out in zip(
-                    group, self._run_heads(session, [rows[i] for i in group])
-                ):
-                    heads[i] = out
-            self._encode_rows(session, to_track, heads)
-            for obj, out in zip(to_track, heads):
-                obj.non_cond_outputs[f] = self._compact(session, out)
-                obj.tracked_frame = f
-        return self._assemble_output(session)
+            per.append((session, to_track, rows))
 
-    def _run_heads(self, session, rows):
+        keys = [(si, oi) for si, (_, _, rows) in enumerate(per) for oi in range(len(rows))]
+        if keys:
+            all_rows = [per[si][2][oi] for si, oi in keys]
+            if self.batch_objects:
+                groups = group_rows(all_rows)
+            else:
+                groups = [[i] for i in range(len(all_rows))]
+            heads = {}
+            for group in groups:
+                members = [keys[i] for i in group]
+                outs = self._run_heads(
+                    [per[si][0] for si, _ in members],
+                    [per[si][2][oi] for si, oi in members],
+                )
+                for key, out in zip(members, outs):
+                    heads[key] = out
+            entries = [
+                (session, objs, [heads[(si, oi)] for oi in range(len(objs))])
+                for si, (session, objs, _) in enumerate(per)
+                if objs
+            ]
+            self._encode_rows(entries)
+            for session, objs, outs in entries:
+                f = session.frame_idx
+                for obj, out in zip(objs, outs):
+                    obj.non_cond_outputs[f] = self._compact(session, out)
+                    obj.tracked_frame = f
+        return [self._assemble_output(session) for session in sessions]
+
+    def _features_rows(self, row_sessions):
+        """Prepared features where row i comes from row_sessions[i]'s current frame."""
+        first = row_sessions[0]
+        if all(s is first for s in row_sessions):
+            return self._features(first, len(row_sessions))
+        outs = [s.backbone_out for s in row_sessions]
+        mixed = {
+            key: [torch.cat([o[key][lvl] for o in outs]) for lvl in range(len(outs[0][key]))]
+            for key in ("backbone_fpn", "vision_pos_enc")
+        }
+        _, feats, pos, sizes = self._prepare_backbone_features(mixed)
+        return feats, pos, sizes
+
+    def _run_heads(self, row_sessions, rows):
         """Memory attention and SAM heads (`track_step` up to the memory encoder) for
-        rows that share one memory layout; one output dict per row."""
+        rows that share one memory layout (row i on row_sessions[i]); one output dict
+        per row."""
         B = len(rows)
-        feats, pos, sizes = self._features(session, B)
+        feats, pos, sizes = self._features_rows(row_sessions)
         memory, memory_pos, num_obj_ptr_tokens = stack_rows(rows)
         pix_feat = self.memory_attention(
             curr=feats[-1:],
@@ -415,18 +488,25 @@ class SAM2StreamPredictor(SAM2Base):
             for i in range(B)
         ]
 
-    def _encode_rows(self, session, objs, heads):
-        """Memory of the tracked rows; as upstream, from the masks before hole filling."""
-        high_res_masks = torch.cat([h["pred_masks_high_res"] for h in heads], dim=0)
-        scores = torch.cat([h["object_score_logits"] for h in heads], dim=0)
-        if self.non_overlap_across_objects:
-            high_res_masks = non_overlap_rows(
-                self, high_res_masks, self._competitor_masks(session, objs)
-            )
+    def _encode_rows(self, entries):
+        """Memory of the tracked rows of every (session, objs, heads) entry; as
+        upstream, from the masks before hole filling. Non-overlap is applied within
+        each session; with batch_objects all rows share one memory-encoder call."""
+        heads, row_sessions, masks, scores = [], [], [], []
+        for session, objs, hs in entries:
+            hr = torch.cat([h["pred_masks_high_res"] for h in hs], dim=0)
+            if self.non_overlap_across_objects:
+                hr = non_overlap_rows(self, hr, self._competitor_masks(session, objs))
+            masks.append(hr)
+            scores.append(torch.cat([h["object_score_logits"] for h in hs], dim=0))
+            heads += hs
+            row_sessions += [session] * len(hs)
+        high_res_masks = torch.cat(masks, dim=0)
+        scores = torch.cat(scores, dim=0)
         n = len(heads)
         batches = [list(range(n))] if self.batch_objects else [[i] for i in range(n)]
         for idx in batches:
-            feats, _, sizes = self._features(session, len(idx))
+            feats, _, sizes = self._features_rows([row_sessions[i] for i in idx])
             maskmem_features, maskmem_pos_enc = self._encode_new_memory(
                 current_vision_feats=feats,
                 feat_sizes=sizes,
@@ -584,6 +664,19 @@ class SAM2StreamPredictor(SAM2Base):
             low_res_mask_logits=low_res_masks,
             object_score_logits=torch.cat(scores, dim=0),
         )
+
+
+def _backbone_row(backbone_out, k):
+    """Row k of a batched `forward_image` output, as a batch-1 output."""
+    out = {}
+    for key, val in backbone_out.items():
+        if isinstance(val, (list, tuple)):
+            out[key] = [v[k : k + 1] for v in val]
+        elif torch.is_tensor(val):
+            out[key] = val[k : k + 1]
+        else:
+            out[key] = val
+    return out
 
 
 def non_overlap_rows(model, rows_high_res, competitor_high_res):
