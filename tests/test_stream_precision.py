@@ -61,3 +61,71 @@ def test_same_output_under_autocast(stream_predictor, upstream_images):
         torch.testing.assert_close(
             got[t].mask_logits, ref[t].mask_logits, atol=1e-5, rtol=0
         )
+
+
+def _rope_inputs(dtype):
+    from sam2.modeling.position_encoding import compute_axial_cis
+
+    g = torch.Generator().manual_seed(0)
+    freqs = compute_axial_cis(dim=16, end_x=4, end_y=4)  # [16, 8]
+    q = torch.randn(2, 1, 16, 16, generator=g).to(dtype)
+    k = torch.randn(2, 1, 48, 16, generator=g).to(dtype)  # 3 frames of 16 tokens
+    return q, k, freqs
+
+
+def test_low_precision_rotary_matches_the_fp32_path(monkeypatch):
+    from sam2.modeling.position_encoding import apply_rotary_enc
+
+    q, k, freqs = _rope_inputs(torch.bfloat16)
+    monkeypatch.setenv("SAM2_LOWP_ATTENTION", "0")
+    ref_q, ref_k = apply_rotary_enc(q, k, freqs, repeat_freqs_k=True)
+    monkeypatch.setenv("SAM2_LOWP_ATTENTION", "1")
+    got_q, got_k = apply_rotary_enc(q, k, freqs, repeat_freqs_k=True)
+    assert got_q.dtype == got_k.dtype == torch.bfloat16
+    assert got_k.shape == ref_k.shape
+    # a few bf16 roundings apart (values are about unit size)
+    assert (got_q.float() - ref_q.float()).abs().max() < 0.05
+    assert (got_k.float() - ref_k.float()).abs().max() < 0.05
+    # the repeated frames get the same rotation as the first
+    torch.testing.assert_close(
+        apply_rotary_enc(q, k[:, :, 16:32], freqs)[1], got_k[:, :, 16:32]
+    )
+
+
+def test_fp32_inputs_keep_the_fp32_path(monkeypatch):
+    from sam2.modeling.position_encoding import apply_rotary_enc
+
+    q, k, freqs = _rope_inputs(torch.float32)
+    monkeypatch.setenv("SAM2_LOWP_ATTENTION", "1")
+    on = apply_rotary_enc(q, k, freqs, repeat_freqs_k=True)
+    monkeypatch.setenv("SAM2_LOWP_ATTENTION", "0")
+    off = apply_rotary_enc(q, k, freqs, repeat_freqs_k=True)
+    torch.testing.assert_close(on[0], off[0], rtol=0, atol=0)
+    torch.testing.assert_close(on[1], off[1], rtol=0, atol=0)
+
+
+def test_autocast_dtype():
+    from sam2.stream.precision import autocast_dtype
+
+    assert autocast_dtype("cpu") is None
+    with torch.autocast("cpu", dtype=torch.bfloat16):
+        assert autocast_dtype("cpu") == torch.bfloat16
+
+
+def test_low_precision_attention_keeps_the_masks(stream_predictor, upstream_images, monkeypatch):
+    from sam2.stream.precision import cast_matmul_weights
+
+    p = _fresh(stream_predictor)
+    cast_matmul_weights(p, torch.bfloat16)
+    schedule = {0: [("add_prompt", {"obj_id": k, "box": BOXES[k]}) for k in (1, 2)]}
+    runs = {}
+    for flag in ("0", "1"):
+        monkeypatch.setenv("SAM2_LOWP_ATTENTION", flag)
+        with torch.autocast("cpu", dtype=torch.bfloat16):
+            runs[flag], _ = run_stream(p, upstream_images, VIDEO_HW, schedule, num_frames=8)
+    agree = []
+    for t in runs["0"]:
+        for a, b in zip(runs["0"][t].mask_logits > 0, runs["1"][t].mask_logits > 0):
+            union = (a | b).sum().item()
+            agree.append((a & b).sum().item() / union if union else 1.0)
+    assert min(agree) > 0.9, agree

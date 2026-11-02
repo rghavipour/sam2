@@ -4,6 +4,8 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 
+import os
+
 import torch
 
 # modules whose weights autocast casts to its lower-precision dtype on every call
@@ -16,6 +18,28 @@ _MATMUL_MODULES = (
     torch.nn.ConvTranspose2d,
     torch.nn.ConvTranspose3d,
 )
+
+
+def lowp_attention() -> bool:
+    """
+    Whether memory attention keeps its bf16/fp16 inputs in that dtype under autocast:
+    rotary encoding computed in the input's dtype (instead of fp32 and back) and the
+    stacked memory cast once per step (instead of by every layer's projections).
+    SAM2_LOWP_ATTENTION=0 restores the fp32 path; read on every call.
+    """
+    return os.getenv("SAM2_LOWP_ATTENTION", "1") != "0"
+
+
+def autocast_dtype(device_type: str = "cuda"):
+    """The dtype autocast runs `device_type` in now, or None when it is off."""
+    try:
+        if not torch.is_autocast_enabled(device_type):
+            return None
+        return torch.get_autocast_dtype(device_type)
+    except (TypeError, AttributeError):  # torch < 2.4
+        if device_type != "cuda" or not torch.is_autocast_enabled():
+            return None
+        return torch.get_autocast_gpu_dtype()
 
 
 def cast_matmul_weights(module, dtype=torch.bfloat16):
