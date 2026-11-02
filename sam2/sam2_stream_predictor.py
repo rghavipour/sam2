@@ -16,7 +16,6 @@ from sam2.stream.memory import (
     stack_rows,
     stack_rows_padded,
 )
-from sam2.stream.precision import autocast_dtype, lowp_attention
 from sam2.stream.preprocess import preprocess_frame
 from sam2.stream.state import (
     evict_cond_frames,
@@ -473,10 +472,6 @@ class SAM2StreamPredictor(SAM2Base):
             memory, memory_pos, num_obj_ptr_tokens, memory_mask = stack_rows_padded(
                 rows, H * W
             )
-        dtype = autocast_dtype(memory.device.type) if lowp_attention() else None
-        if dtype is not None and dtype != torch.float32:
-            # once here, rather than by every layer's key and value projections
-            memory, memory_pos = memory.to(dtype), memory_pos.to(dtype)
         pix_feat = self.memory_attention(
             curr=feats[-1:],
             curr_pos=pos[-1:],

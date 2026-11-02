@@ -209,43 +209,12 @@ def reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor):
     return freqs_cis.view(*shape)
 
 
-def _cos_sin(freqs_cis: torch.Tensor, dtype: torch.dtype, repeat: int):
-    """cos and sin of `freqs_cis` ([L, D/2], complex) in `dtype`, repeated `repeat`
-    times along L; cached on the tensor, which RoPEAttention keeps across calls."""
-    cache = getattr(freqs_cis, "_cos_sin_cache", None)
-    if cache is None:
-        cache = {}
-        freqs_cis._cos_sin_cache = cache
-    key = (dtype, repeat)
-    if key not in cache:
-        f = freqs_cis if repeat == 1 else freqs_cis.repeat(repeat, 1)
-        cache[key] = (f.real.to(dtype), f.imag.to(dtype))
-    return cache[key]
-
-
-def _rotate(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
-    x = x.reshape(*x.shape[:-1], -1, 2)
-    x0, x1 = x[..., 0], x[..., 1]
-    return torch.stack((x0 * cos - x1 * sin, x0 * sin + x1 * cos), dim=-1).flatten(-2)
-
-
 def apply_rotary_enc(
     xq: torch.Tensor,
     xk: torch.Tensor,
     freqs_cis: torch.Tensor,
     repeat_freqs_k: bool = False,
 ):
-    from sam2.stream.precision import lowp_attention
-
-    if xq.dtype in (torch.bfloat16, torch.float16) and xk.dtype == xq.dtype and lowp_attention():
-        # the same rotation in the inputs' dtype: no fp32 copies of q and k
-        cos, sin = _cos_sin(freqs_cis, xq.dtype, 1)
-        xq_out = _rotate(xq, cos, sin)
-        if xk.shape[-2] == 0:
-            return xq_out, xk
-        r = xk.shape[-2] // xq.shape[-2] if repeat_freqs_k else 1
-        cos_k, sin_k = _cos_sin(freqs_cis, xk.dtype, r)
-        return xq_out, _rotate(xk, cos_k, sin_k)
     xq_ = torch.view_as_complex(xq.float().reshape(*xq.shape[:-1], -1, 2))
     xk_ = (
         torch.view_as_complex(xk.float().reshape(*xk.shape[:-1], -1, 2))
